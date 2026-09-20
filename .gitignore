@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+models/*.onnx
+tests/audio/
+.DS_Store
+history.jsonl

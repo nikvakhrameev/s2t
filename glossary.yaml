@@ -1,0 +1,22 @@
+# Устойчивые термины. Используются в трёх местах:
+#   1. как prompt для Whisper (смещает распознавание к этим написаниям);
+#   2. aliases заменяются на term детерминированно (regex, без учёта регистра);
+#   3. список term передаётся LLM-чистильщику как эталон написания.
+# Файл перечитывается автоматически при изменении — перезапуск не нужен.
+terms:
+  - term: Kubernetes
+    aliases: [кубернетес, кубернетис, кубернетс]
+  - term: PostgreSQL
+    aliases: [постгрес, постгресс, postgres, постгрескуэль]
+  - term: Grafana
+    aliases: [графана]
+  - term: Claude Code
+    aliases: [клод код, клауд код]
+  - GitHub
+  - Docker
+  - Redis
+  - Kafka
+  - Python
+  - TypeScript
+  - pull request
+  - API

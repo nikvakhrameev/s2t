@@ -1,0 +1,39 @@
+# Все ключи необязательны — значения по умолчанию см. в s2t/config.py.
+glossary_path: glossary.yaml
+
+vad:
+  enabled: true
+  threshold: 0.5
+  edge_pad_ms: 200     # сколько тишины оставлять по краям
+  max_pause_ms: 500    # паузы внутри речи длиннее этого сжимаются до этого значения
+
+stt:
+  model: mlx-community/whisper-large-v3-turbo
+  language: auto              # auto | ru | en
+  auto_languages: [ru, en]    # auto выбирает только среди этих языков
+
+cleanup:
+  enabled: true
+  model: mlx-community/Qwen3-4B-Instruct-2507-4bit
+  max_dropped_ratio: 0.1      # доля значимых слов, которую LLM может убрать; иначе возвращается сырой текст
+  max_negation_loss: 0.5      # доля отрицаний (не/not), которую можно потерять: 1 из 2 — ок, единственное — нет; 0 = строго
+
+dictation:
+  enabled: true
+  hotkeys:                    # push-to-talk: держать клавишу = запись, отпустить = вставка
+    - {key: alt_r, language: auto}
+    # - {key: cmd_r, language: ru}
+    # - {key: f13,   language: en}
+  paste: true                 # false — только положить текст в буфер обмена
+  restore_clipboard: true
+  sounds: true
+  keep_mic_open: false        # true — запись стартует мгновенно, но индикатор микрофона горит всегда
+
+server:
+  host: 127.0.0.1
+  port: 8765
+
+history:                      # журнал: сырой и очищенный текст, тайминги, срабатывания guardrail'ов
+  enabled: true
+  path: history.jsonl         # JSON Lines; относительный путь — от корня репозитория. Здесь всё надиктованное!
+  origins: [dictation, api, cli]   # что журналировать: хоткей | HTTP API | s2t transcribe --local
