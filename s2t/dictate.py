@@ -16,6 +16,7 @@ from pynput import keyboard
 
 from .audio import SAMPLE_RATE, resample_pcm
 from .config import DictationConfig
+from .overlay import Overlay
 from .pipeline import Engine
 
 SOUND_START = "/System/Library/Sounds/Tink.aiff"
@@ -102,6 +103,7 @@ class Dictation:
         self.engine = engine
         self.bindings = {resolve_key(b.key): b.language for b in config.hotkeys}
         self.recorder = Recorder(config.input_device, config.keep_mic_open)
+        self.overlay = Overlay(config.overlay)
         self._active = None  # the key currently held for recording
         self._started_at = 0.0
         self._lock = threading.Lock()
@@ -113,6 +115,7 @@ class Dictation:
     def start(self) -> None:
         if self.config.keep_mic_open:
             self.recorder.open()
+        self.overlay.start()
         self._listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
         self._listener.start()
 
@@ -120,6 +123,7 @@ class Dictation:
         if self._listener is not None:
             self._listener.stop()
         self.recorder.close()
+        self.overlay.close()
 
     def _on_press(self, key) -> None:
         with self._lock:
@@ -134,7 +138,9 @@ class Dictation:
             with self._lock:
                 self._active = None
             return
-        self._play(SOUND_START)  # the cue means "the microphone is live now"
+        # Both cues mean "the microphone is live now", so the timer shows what was really recorded.
+        self.overlay.show()
+        self._play(SOUND_START)
 
     def _on_release(self, key) -> None:
         with self._lock:
@@ -142,6 +148,7 @@ class Dictation:
                 return
             self._active = None
             held_ms = (time.monotonic() - self._started_at) * 1000
+        self.overlay.hide()
         samples = self.recorder.stop()
         if held_ms < self.config.min_record_ms:
             return

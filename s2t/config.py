@@ -93,6 +93,17 @@ class HotkeyBinding:
 
 
 @dataclass
+class OverlayConfig:
+    # Pill above all windows while recording: pulsing dot + elapsed time.
+    enabled: bool = True
+    # top | bottom | top_left | top_right | bottom_left | bottom_right,
+    # on the screen under the mouse pointer (menu bar and Dock excluded).
+    position: str = "top"
+    margin: int = 12  # points from the screen edge
+    scale: float = 1.0  # 1.0 = 30 pt high
+
+
+@dataclass
 class DictationConfig:
     enabled: bool = True
     # Push-to-talk: hold the key to record, release to transcribe and paste.
@@ -107,6 +118,7 @@ class DictationConfig:
     # True = zero start latency, but the macOS mic indicator stays on.
     keep_mic_open: bool = False
     input_device: str | int | None = None
+    overlay: OverlayConfig = field(default_factory=OverlayConfig)
 
 
 @dataclass

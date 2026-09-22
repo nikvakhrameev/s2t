@@ -234,3 +234,70 @@ def test_engine_journals_results(tmp_path: Path):
     path.unlink()
     engine.history.append(Result(text="x"), "dictation")
     assert not path.exists()
+
+
+def test_overlay_config_format_and_placement(tmp_path: Path):
+    from s2t.config import OverlayConfig
+    from s2t.overlay import Overlay, format_elapsed, pill_origin
+
+    path = tmp_path / "config.yaml"
+    path.write_text("dictation: {overlay: {position: bottom_right, scale: 1.5}}", encoding="utf-8")
+    overlay_config = load_config(path).dictation.overlay
+    assert (overlay_config.enabled, overlay_config.position, overlay_config.scale) == (True, "bottom_right", 1.5)
+    path.write_text("dictation: {overlay: {nope: 1}}", encoding="utf-8")
+    with pytest.raises(ValueError, match="dictation.overlay.nope"):
+        load_config(path)
+    with pytest.raises(ValueError, match="middle"):
+        Overlay(OverlayConfig(position="middle"))
+
+    assert [format_elapsed(s) for s in (0, 9.99, 61.5, 600)] == ["0:00", "0:09", "1:01", "10:00"]
+    area, size = (100, 50, 1000, 800), (80, 30)  # AppKit: y grows upwards
+    assert pill_origin("top", area, size, 12) == (560, 808)
+    assert pill_origin("bottom", area, size, 12) == (560, 62)
+    assert pill_origin("top_left", area, size, 12) == (112, 808)
+    assert pill_origin("bottom_right", area, size, 12) == (1008, 62)
+
+    disabled = Overlay(OverlayConfig(enabled=False))  # no helper process is ever spawned
+    disabled.start(), disabled.show(), disabled.hide(), disabled.close()
+    assert disabled._process is None
+
+
+def test_dictation_shows_overlay_only_while_the_mic_is_live():
+    from s2t.config import DictationConfig
+    from s2t.dictate import Dictation, resolve_key
+
+    events: list[str] = []
+
+    class StubRecorder:
+        def start(self):
+            events.append("mic on")
+
+        def stop(self):
+            events.append("mic off")
+            return np.zeros(0, dtype=np.float32)
+
+    class DeadRecorder(StubRecorder):
+        def start(self):
+            raise OSError("no microphone")
+
+    class StubOverlay:
+        def show(self):
+            events.append("show")
+
+        def hide(self):
+            events.append("hide")
+
+    # min_record_ms: the key is "released too early", so the engine is never reached.
+    dictation = Dictation(DictationConfig(sounds=False, paste=False, min_record_ms=60_000), engine=None)
+    dictation.recorder, dictation.overlay = StubRecorder(), StubOverlay()
+    key = resolve_key("alt_r")
+    dictation._on_press(key)
+    dictation._on_press(key)  # key auto-repeat while held
+    dictation._on_release(key)
+    assert events == ["mic on", "show", "hide", "mic off"]
+
+    events.clear()
+    dictation.recorder = DeadRecorder()
+    dictation._on_press(key)
+    dictation._on_release(key)
+    assert events == []

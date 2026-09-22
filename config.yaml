@@ -28,6 +28,11 @@ dictation:
   restore_clipboard: true
   sounds: true
   keep_mic_open: false        # true — запись стартует мгновенно, но индикатор микрофона горит всегда
+  overlay:                    # индикатор записи поверх всех окон: пульсирующая точка + таймер
+    enabled: true
+    position: top             # top | bottom | top_left | top_right | bottom_left | bottom_right (экран, где курсор мыши)
+    margin: 12                # отступ от края экрана, pt (меню-бар и Dock не считаются)
+    scale: 1.0                # размер: 1.0 = высота 30 pt
 
 server:
   host: 127.0.0.1

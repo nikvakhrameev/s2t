@@ -28,6 +28,10 @@ curl -F file=@voice.m4a -F language=ru http://127.0.0.1:8765/transcribe
 Хоткеи и язык для каждого задаются в `config.yaml` (`dictation.hotkeys`) — можно завести отдельные
 клавиши для `ru` / `en` / `auto`.
 
+Пока клавиша зажата, поверх всех окон (включая полноэкранные) висит индикатор: пульсирующая красная
+точка и таймер записи `0:07`. Он появляется в момент, когда микрофон реально начал писать, не
+перехватывает фокус и клики. Положение, размер и выключатель — `dictation.overlay` в `config.yaml`.
+
 Приложению, из которого запущен сервис (Terminal/iTerm), нужны разрешения в
 System Settings → Privacy & Security: **Microphone**, **Input Monitoring**, **Accessibility**.
 
@@ -83,6 +87,9 @@ jq -r 'select(.origin == "dictation") | .timings_ms.total' history.jsonl        
 - `glossary.yaml` — словарь терминов.
 - `dictation.keep_mic_open: true` — запись стартует мгновенно (иначе ~300 мс на открытие микрофона,
   сигнал «Tink» звучит, когда микрофон уже пишет), но индикатор микрофона macOS горит постоянно.
+- `dictation.overlay` — индикатор записи: `enabled`, `position` (`top` | `bottom` | `top_left` |
+  `top_right` | `bottom_left` | `bottom_right`, на экране под курсором мыши), `margin` (pt от края),
+  `scale` (1.0 = высота 30 pt).
 - Сравнить модели очистки: `uv run python scripts/eval_cleanup.py -v MODEL [MODEL ...]` —
   доля ответов, прошедших guardrails, и латентность на фиксированном наборе фраз.
 - Быстрее/легче: `cleanup.enabled: false` (Whisper сам ставит пунктуацию, пропадает только чистка паразитов).
@@ -94,7 +101,7 @@ s2t/audio.py     ffmpeg-декодер          s2t/cleanup.py   LLM-очист�
 s2t/vad.py       Silero VAD, паузы       s2t/pipeline.py  конвейер + Engine (один MLX-поток)
 s2t/stt.py       Whisper MLX             s2t/server.py    FastAPI
 s2t/glossary.py  словарь                 s2t/dictate.py   хоткей, запись, вставка
-s2t/history.py   журнал history.jsonl
+s2t/history.py   журнал history.jsonl    s2t/overlay.py   индикатор записи (отдельный процесс)
 ```
 
 Бэкенд STT изолирован в `s2t/stt.py` (`load` / `transcribe`) — позже можно добавить

@@ -60,3 +60,10 @@ Read this before changing guardrails, chunking, models or the glossary layers.
 - Hold-to-record on a lone modifier (Right Option) — types nothing, works in any app.
 - Start cue plays after the mic is live (~300 ms open latency); `keep_mic_open` trades the macOS mic indicator for zero latency.
 - Paste = clipboard + Cmd+V by **physical key code** (layout-independent), then the clipboard is restored.
+
+## D10. Recording indicator = a helper process, not a window in `s2t serve`
+
+- The user asked for an always-on-top element showing that recording is on and for how long. It is a pill with a pulsing dot and an `m:ss` timer (`s2t/overlay.py`), shown from "mic is live" (same moment as the start cue) until key release, so the timer equals the recorded length.
+- AppKit windows need the main thread of their process plus a run loop, and the main thread of `s2t serve` runs uvicorn. Moving uvicorn off the main thread would touch signal handling and the MLX shutdown order, so the pill is a separate `python -m s2t.overlay` process, spawned once at start (cold start ~0.25 s, warm show ~15 ms) and driven over stdin (`show` / `hide`; EOF = exit, so it cannot outlive the server; a dead helper is respawned on the next command). It ignores SIGINT: Ctrl+C reaches the whole process group and the parent shuts it down.
+- It must never take focus (the paste goes to the user's window): accessory activation policy, borderless non-activating `NSPanel`, `ignoresMouseEvents`, `orderFrontRegardless`. Level `NSScreenSaverWindowLevel` + `FullScreenAuxiliary` puts it above full-screen apps.
+- PyObjC (`pyobjc-framework-Cocoa` / `-Quartz`) was already installed via `pynput`; it is now a declared dependency. `dictation.overlay.{enabled,position,margin,scale}` are config knobs.

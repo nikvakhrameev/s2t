@@ -4,7 +4,7 @@ Last updated: 2026-09-21 (history journal added).
 
 ## Status
 
-- MVP works end to end: CLI, HTTP API, push-to-talk dictation. 15 unit tests pass (`uv run pytest -q`).
+- MVP works end to end: CLI, HTTP API, push-to-talk dictation. 17 unit tests pass (`uv run pytest -q`).
 - Verified by an agent: decoding of ogg/opus, m4a, mp3, aiff, mp4 video; VAD trimming; RU/EN recognition with glossary terms; cleanup not answering questions / not obeying instructions; guardrails on real model glitches; hotkey → record → pipeline → clipboard (simulated key press); clean shutdown.
 - **Not verified**: real Cmd+V paste into a focused app (needs Accessibility for the terminal); any live speech — all audio so far is macOS `say` TTS.
 - Code is in the private GitHub repo `nikvakhrameev/s2t` (initial commit 2026-09-21). No linter configured.
