@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import difflib
+import functools
 import re
 from dataclasses import dataclass, field
 
@@ -73,13 +74,6 @@ def _words(text: str) -> list[str]:
     return re.findall(r"\w+", text.lower().replace("ё", "е"))
 
 
-NEGATIONS = frozenset({"не", "ни", "нет", "not", "no", "never"})
-# Words the cleaner may delete freely (single words of multi-word fillers too).
-FILLERS = frozenset(
-    "ну вот это как бы типа в общем короче значит так самое то есть слушай смотри "
-    "э ээ эээ эм мм ммм а и да же "
-    "um uh er hmm like you know i mean so well actually basically kind sort of right okay ok".split()
-)
 _TRANSLIT = str.maketrans({
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ж": "zh", "з": "z",
     "и": "i", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o", "п": "p",
@@ -90,27 +84,36 @@ _CYRILLIC = re.compile(r"[а-я]")
 _LATIN = re.compile(r"[a-z]")
 
 
-def _unmatched(words: list[str], pool: set[str]) -> list[str]:
+@functools.lru_cache(maxsize=None)
+def _normalized(words: tuple[str, ...]) -> frozenset[str]:
+    """A configured word list (fillers, negations), normalised the same way
+    `_words` normalises transcript text ("Ещё" -> "еще") and cached per distinct
+    tuple so it is not rebuilt on every guardrail check."""
+    return frozenset(w.lower().replace("ё", "е") for w in words)
+
+
+def _unmatched(words: list[str], pool: set[str], config: CleanupConfig | None = None) -> list[str]:
     """Words with no counterpart in `pool`.
 
     A counterpart is the same word, a close respelling ("конекшенов" ->
     "коннекшенов") or the same word in the other script ("питоне" -> "Python").
     """
+    config = config or CleanupConfig()
     missing = []
     for word in words:
-        if word in pool or len(word) < 3:
+        if word in pool or len(word) < config.min_word_chars:
             continue
-        if difflib.get_close_matches(word, pool, n=1, cutoff=0.75):
+        if difflib.get_close_matches(word, pool, n=1, cutoff=config.spelling_similarity):
             continue
         cyrillic = bool(_CYRILLIC.search(word))
         other_script = {w.translate(_TRANSLIT) for w in pool if bool(_CYRILLIC.search(w)) != cyrillic}
-        if difflib.get_close_matches(word.translate(_TRANSLIT), other_script, n=1, cutoff=0.6):
+        if difflib.get_close_matches(word.translate(_TRANSLIT), other_script, n=1, cutoff=config.translit_similarity):
             continue
         missing.append(word)
     return missing
 
 
-def novel_words(raw: str, cleaned: str) -> list[str]:
+def novel_words(raw: str, cleaned: str, config: CleanupConfig | None = None) -> list[str]:
     """Words the LLM invented. Cleanup only deletes, re-punctuates and respells,
     so every output word must trace back to a transcript word. Glossary terms get
     no free pass: a 4-bit model was seen replacing an unknown word with a random
@@ -118,12 +121,14 @@ def novel_words(raw: str, cleaned: str) -> list[str]:
     source = set(_words(raw))
     output = _words(cleaned)
     mixed = [w for w in output if w not in source and _CYRILLIC.search(w) and _LATIN.search(w)]
-    return mixed + _unmatched(output, source)
+    return mixed + _unmatched(output, source, config)
 
 
-def dropped_words(raw: str, cleaned: str) -> list[str]:
+def dropped_words(raw: str, cleaned: str, config: CleanupConfig | None = None) -> list[str]:
     """Meaningful transcript words that vanished (fillers and stutters may go)."""
-    return [w for w in _unmatched(_words(raw), set(_words(cleaned))) if w not in FILLERS]
+    config = config or CleanupConfig()
+    fillers = _normalized(config.fillers)
+    return [w for w in _unmatched(_words(raw), set(_words(cleaned)), config) if w not in fillers]
 
 
 def _collapse_repeats(words: list[str], max_n: int = 4) -> list[str]:
@@ -139,13 +144,15 @@ def _collapse_repeats(words: list[str], max_n: int = 4) -> list[str]:
     return out
 
 
-def negation_count(text: str) -> int:
+def negation_count(text: str, config: CleanupConfig | None = None) -> int:
     """Negations that carry meaning. Hesitation repeats ("не... э-э... не уверен")
     are one negation, so both texts are normalized the same way before counting:
     fillers out, repeats collapsed. What the normalization misses is absorbed by
     `CleanupConfig.max_negation_loss` in `LlmCleaner._accept`."""
-    words = _collapse_repeats([w for w in _words(text) if w not in FILLERS])
-    return sum(w in NEGATIONS for w in words)
+    config = config or CleanupConfig()
+    fillers, negations = _normalized(config.fillers), _normalized(config.negations)
+    words = _collapse_repeats([w for w in _words(text) if w not in fillers])
+    return sum(w in negations for w in words)
 
 
 def split_chunks(text: str, limit: int) -> list[str]:
@@ -279,15 +286,15 @@ class LlmCleaner:
             return "too_long", []
         # Negations: never gain one; losing some is tolerated (a speaker who
         # hesitates repeats them), but losing the only one is a meaning flip.
-        raw_negations, negations = negation_count(raw), negation_count(cleaned)
+        raw_negations, negations = negation_count(raw, self.config), negation_count(cleaned, self.config)
         if negations > raw_negations:
             return "negation_gained", []
         if raw_negations - negations > raw_negations * self.config.max_negation_loss:
             return "negation_lost", []
-        novel = novel_words(raw, cleaned)
+        novel = novel_words(raw, cleaned, self.config)
         if novel:
             return "invented_words", novel
-        dropped = dropped_words(raw, cleaned)
+        dropped = dropped_words(raw, cleaned, self.config)
         allowed_drops = max(1, round(len(_words(raw)) * self.config.max_dropped_ratio))
         if len(dropped) > allowed_drops:
             return "dropped_words", dropped

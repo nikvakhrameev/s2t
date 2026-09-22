@@ -64,8 +64,9 @@ def main() -> None:
             if args.verbose or not ok:
                 why = ""
                 if not ok:
-                    why = (f"   <- REJECTED novel={novel_words(text, out)} dropped={dropped_words(text, out)}"
-                           f" neg={negation_count(text)}/{negation_count(out)}")
+                    why = (f"   <- REJECTED novel={novel_words(text, out, cleaner.config)} "
+                           f"dropped={dropped_words(text, out, cleaner.config)}"
+                           f" neg={negation_count(text, cleaner.config)}/{negation_count(out, cleaner.config)}")
                 print(f"  [{'ok' if ok else 'XX'}] {out}{why}")
         print(
             f"== {name}\n   accepted {len(CASES) - rejected}/{len(CASES)}, unchanged {unchanged}, "

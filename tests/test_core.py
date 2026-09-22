@@ -176,6 +176,65 @@ def test_violation_names_the_guardrail():
     assert reason == "dropped_words" and "сервер" in words
 
 
+def test_guardrail_similarity_and_length_knobs_are_configurable():
+    from s2t.cleanup import dropped_words, negation_count
+
+    # translit_similarity: default (0.6) accepts "воркере" -> "Docker" as a
+    # respelling; a stricter knob rejects it as an invented word.
+    raw = "я думаю что дело в утечке в воркере"
+    cleaned = "Я думаю, что дело в утечке в Docker."
+    assert LlmCleaner(CleanupConfig())._violation(raw, cleaned) is None
+    assert LlmCleaner(CleanupConfig(translit_similarity=0.75))._violation(raw, cleaned) == (
+        "invented_words", ["docker"]
+    )
+
+    # spelling_similarity: "сервера" -> "серваки" sits just below the default
+    # cutoff (invented), a looser cutoff accepts it as a respelling.
+    raw = "мы перезапустили сервера ночью"
+    cleaned = "Мы перезапустили серваки ночью."
+    assert LlmCleaner(CleanupConfig())._violation(raw, cleaned) == ("invented_words", ["серваки"])
+    assert LlmCleaner(CleanupConfig(spelling_similarity=0.7))._violation(raw, cleaned) is None
+
+    # min_word_chars: short invented words are ignored by default, caught once
+    # the minimum is lowered.
+    raw, cleaned = "мы это ок сделаем", "Мы это ой сделаем."
+    assert LlmCleaner(CleanupConfig())._violation(raw, cleaned) is None
+    assert LlmCleaner(CleanupConfig(min_word_chars=1))._violation(raw, cleaned) == (
+        "invented_words", ["ой"]
+    )
+
+    # fillers: an added filler is dropped for free instead of tripping dropped_words.
+    raw, cleaned = "сначала например обновим базу", "Сначала обновим базу."
+    assert dropped_words(raw, cleaned) == ["например"]
+    extra_filler = CleanupConfig(fillers=CleanupConfig().fillers + ("например",))
+    assert dropped_words(raw, cleaned, extra_filler) == []
+
+    # negations: an added negation is counted; configured entries are normalized
+    # (case, "ё") the same way transcript text is.
+    assert negation_count("это нельзя делать") == 0
+    extra_negation = CleanupConfig(negations=CleanupConfig().negations + ("нельзя",))
+    assert negation_count("это нельзя делать", extra_negation) == 1
+    assert negation_count("нельзя", CleanupConfig(negations=("НЕЛЬЗЯ",))) == 1
+    assert dropped_words("это ещё видно", "Это видно.", CleanupConfig(fillers=("Ещё",))) == []
+
+
+def test_cleanup_config_word_lists_load_and_reject_unquoted_yaml_booleans(tmp_path: Path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "cleanup: {fillers: [ну, ладно], negations: [не, нельзя], spelling_similarity: 0.8}\n",
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    assert config.cleanup.fillers == ("ну", "ладно")
+    assert config.cleanup.negations == ("не", "нельзя")
+    assert config.cleanup.spelling_similarity == 0.8
+
+    # Unquoted `no` is parsed by PyYAML as the boolean False, not the word "no".
+    path.write_text("cleanup: {negations: [не, no]}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="cleanup.negations"):
+        load_config(path)
+
+
 def test_clean_records_every_guardrail_hit(monkeypatch):
     cleaner = LlmCleaner(CleanupConfig())
     monkeypatch.setattr(cleaner, "_ensure_prefix", lambda terms: None)

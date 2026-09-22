@@ -84,6 +84,23 @@ class CleanupConfig:
     max_length_ratio: float = 1.3
     # How many glossary terms to show the LLM.
     max_glossary_terms: int = 150
+    # An output word counts as a respelling of a transcript word ("конекшенов" ->
+    # "коннекшенов") at this difflib.get_close_matches ratio or above.
+    spelling_similarity: float = 0.75
+    # Same, after Cyrillic->Latin transliteration ("питоне" -> "Python").
+    translit_similarity: float = 0.6
+    # Words shorter than this are not checked by the invented/dropped-word guardrails.
+    min_word_chars: int = 3
+    # Words the cleaner may delete freely (single words of multi-word fillers too).
+    fillers: tuple[str, ...] = (
+        "ну", "вот", "это", "как", "бы", "типа", "в", "общем", "короче", "значит",
+        "так", "самое", "то", "есть", "слушай", "смотри",
+        "э", "ээ", "эээ", "эм", "мм", "ммм", "а", "и", "да", "же",
+        "um", "uh", "er", "hmm", "like", "you", "know", "i", "mean", "so", "well",
+        "actually", "basically", "kind", "sort", "of", "right", "okay", "ok",
+    )
+    # Negations that carry meaning; see max_negation_loss.
+    negations: tuple[str, ...] = ("не", "ни", "нет", "not", "no", "never")
 
 
 @dataclass
@@ -165,6 +182,15 @@ def _merge(obj: Any, data: dict[str, Any], where: str = "") -> Any:
         elif key == "hotkeys":
             setattr(obj, key, [HotkeyBinding(**item) for item in value])
         elif isinstance(current, tuple) and isinstance(value, list):
+            # PyYAML parses bare `no`/`yes`/etc. as booleans, which would silently
+            # drop a word like "no" from cleanup.negations - catch it here.
+            if all(isinstance(v, str) for v in current):
+                bad = [v for v in value if not isinstance(v, str)]
+                if bad:
+                    raise ValueError(
+                        f"{where}{key}: entry {bad[0]!r} is not a string - quote it "
+                        f'in YAML (e.g. "no")'
+                    )
             setattr(obj, key, tuple(value))
         else:
             setattr(obj, key, value)
