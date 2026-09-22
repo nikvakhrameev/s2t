@@ -1,25 +1,27 @@
 # Roadmap and status
 
-Last updated: 2026-09-21 (Jev guardrail built on a branch, see Next §1).
+Last updated: 2026-09-22 (Jev guardrail built, calibrated and merged, see §1).
 
 ## Status
 
 - MVP works end to end: CLI, HTTP API, push-to-talk dictation. 23 unit tests pass (`uv run pytest -q`).
-- Verified by an agent: decoding of ogg/opus, m4a, mp3, aiff, mp4 video; VAD trimming; RU/EN recognition with glossary terms; cleanup not answering questions / not obeying instructions; guardrails on real model glitches; hotkey → record → pipeline → clipboard (simulated key press); clean shutdown.
+- Optional Jev semantic guardrail (`cleanup.jev.*`, cloud, off by default) is merged and calibrated on `jev-1.13.0`.
+- Verified by an agent: decoding of ogg/opus, m4a, mp3, aiff, mp4 video; VAD trimming; RU/EN recognition with glossary terms; cleanup not answering questions / not obeying instructions; guardrails on real model glitches; hotkey → record → pipeline → clipboard (simulated key press); clean shutdown; Jev verdicts and `timings_ms.jev` on the test recordings.
 - **Not verified**: real Cmd+V paste into a focused app (needs Accessibility for the terminal); any live speech — all audio so far is macOS `say` TTS.
 - Code is in the private GitHub repo `nikvakhrameev/s2t` (initial commit 2026-09-21). No linter configured.
 - Leftovers: the research subagent left ~3 GB of downloaded models in the first session's scratchpad under `/private/tmp/claude-501/…/scratchpad` (safe to delete). Whisper turbo and Qwen3-4B-4bit are in `~/.cache/huggingface`.
 
 ## Next (agreed with the user, not built)
 
-### 1. Semantic guardrail with TypeSafe's **Jev** — built (branch `worktree-jev-guardrail`), **not calibrated**
+### 1. Semantic guardrail with TypeSafe's **Jev** — done (merged 2026-09-22), follow-ups below
 - Built 2026-09-21: `s2t/jev.py`, `cleanup.jev.*`, `Result.jev_checks`, `scripts/eval_jev.py`; design and trade-offs in DECISIONS D11. Off by default (cloud API). Use the `typesafe:typesafe-ai` skill and its live docs when touching it.
-- Remaining, needs the user's API key (`~/.config/s2t/typesafe_api_key`):
-  - Run `scripts/eval_jev.py`: does every default question separate the good pairs from the bad ones on Russian? Reword / drop the ones that do not, set thresholds, then pin `model: jev-1.13.0`.
-  - Compare the targeted set against the one-question variants (`meaning_changed`, `fidelity`, `edit_kind`).
-  - Real latency: `timings_ms.jev` on a 1-chunk and a 5-chunk dictation (expected ~0.35 s per verdict on a warm connection; only the network part, ~235 ms, has been measured).
+- Calibrated 2026-09-22 against `jev-1.13.0` (numbers in D11): all eight targeted questions separate good from bad pairs on Russian and English with the 0.5 thresholds; the one-question variants do not. Real pipeline runs: +0.4 s on a 1-chunk dictation, +0.3 s on a 4-chunk one; no false rejects on the test recordings.
+- Remaining:
+  - Model pinned to `jev-1.13.0` (user decision). To upgrade: set the new id, rerun `scripts/eval_jev.py`, re-check the thresholds.
+  - Live dictation with Jev on; watch `jev_checks` in the journal for false rejects and raise that question's threshold if any. First live dictations (short, already punctuated by Whisper) produced no request at all: the LLM changed no word. A `skip_unchanged` knob (check punctuation-only edits too, «не кушал.» → «не кушал?») was offered, not built.
   - The 422 error body and the server's idle timeout are undocumented — look at them once.
-- Later: tune thresholds from `jev_checks` in the journal; decide whether `mode: only` is viable.
+  - The `content_dropped` margin is narrow (0.47 legit self-correction vs 0.59 dropped «только»); more pairs of both kinds would tell whether the question needs rewording.
+- Later: decide whether `mode: only` is viable.
 
 ### 2. Compare cleanup models
 `uv run python scripts/eval_cleanup.py -v <models>`. Baseline `Qwen3-4B-Instruct-2507-4bit`: 13/14 accepted (the one reject is the prompt-injection case — expected), mean 453 ms, max 647 ms.

@@ -487,7 +487,7 @@ def test_jev_judge_request_and_thresholds(monkeypatch):
         "polarity_flipped": 0.5, "details_changed": 0.5, "fidelity": 0.4, "edit_kind": 0.4}))
     judge.load(transport=httpx.MockTransport(handler))
     verdict = judge.check("это не сработает", "Это сработает.")
-    assert seen[0]["model"] == "jev-latest"
+    assert seen[0]["model"] == "jev-1.13.0"
     assert seen[0]["state"]["raw_transcript"] == "это не сработает"
     assert seen[0]["questions"]["fidelity"] == QUESTIONS["fidelity"]
     assert verdict.risks == {"polarity_flipped": 0.91, "details_changed": 0.02, "fidelity": 0.5, "edit_kind": 0.3}

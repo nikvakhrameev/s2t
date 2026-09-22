@@ -53,7 +53,7 @@ cleanup:
     enabled: false
     # api_key_file: ~/.config/s2t/typesafe_api_key   # ключ: $TYPESAFE_API_KEY, иначе содержимое этого файла (не держите ключ в git)
     mode: both                # both — эвристики + Jev; only — только Jev (эвристики выключены, остаётся проверка на пустой ответ)
-    model: jev-latest         # после подбора порогов закрепите версию (jev-1.13.0)
+    model: jev-1.13.0         # версия, на которой откалиброваны пороги; новую сначала прогоните через scripts/eval_jev.py
     questions:                # вопрос (id из s2t/jev.py: QUESTIONS): максимальный риск 0..1, выше — чанк отклоняется
       content_added: 0.5      #   в тексте появилось то, чего не говорили
       content_dropped: 0.5    #   пропала значимая часть

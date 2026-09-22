@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Local speech-to-text dictation for macOS / Apple Silicon (dev machine: MacBook M4 Pro, 24 GB). Russian + English. Everything runs on-device (one opt-in exception: the Jev semantic guardrail is a cloud API, off by default). Target: **2–3 s for the full cycle** on a typical 5–15 s dictation.
 
-Pipeline: `any audio → ffmpeg (16 kHz mono f32) → Silero VAD → Whisper large-v3-turbo (MLX) → glossary alias replacement → LLM cleanup (MLX) + guardrails → text`.
+Pipeline: `any audio → ffmpeg (16 kHz mono f32) → Silero VAD → Whisper large-v3-turbo (MLX) → glossary alias replacement → LLM cleanup (MLX) + guardrails (+ optional Jev semantic check) → text`.
 
 Further reading (not auto-loaded — open when relevant):
 - `docs/DECISIONS.md` — why things are the way they are; **read before touching guardrails, chunking, models or the glossary layers**.
@@ -74,6 +74,7 @@ No linter is configured. Models download on first use into `~/.cache/huggingface
 - 14 s of speech: ~1.5–2.0 s total (STT ~0.9 s, LLM ~0.5–0.8 s, decode+VAD ~0.1 s). 54 s recording: ~5.3 s, LLM 3.3 s dominates. Model load ~7 s.
 - Whisper always processes a 30 s window, so STT time is flat (~0.8–0.9 s) for anything under 30 s. VAD does **not** speed up short clips — it exists to prevent hallucinations and to cut windows on long audio.
 - LLM time is generation-bound (~60 tok/s for 4B 4-bit); the ~590-token prompt prefix is free thanks to the KV cache. A higher-precision quant will slow generation roughly in proportion to its size.
+- Jev on (`cleanup.jev.enabled`): a verdict takes 310–420 ms on a warm connection (`jev-1.13.0`, six questions, ~1950 input tokens). A 1-chunk dictation waits for the whole of it (+0.4 s); multi-chunk ones only for the last verdict (~+0.3 s total).
 - Always check `timings_ms` after touching the hot path.
 
 ## Testing hotkeys / dictation safely

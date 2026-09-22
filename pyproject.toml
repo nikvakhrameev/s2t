@@ -1,7 +1,7 @@
 [project]
 name = "s2t"
 version = "0.1.0"
-description = "Local speech-to-text for macOS (Apple Silicon): VAD -> Whisper (MLX) -> LLM cleanup, with glossary support"
+description = "Local speech-to-text for macOS (Apple Silicon): VAD -> Whisper (MLX) -> LLM cleanup, with glossary support and an optional Jev semantic guardrail"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "mlx-whisper",

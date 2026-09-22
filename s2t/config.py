@@ -76,8 +76,9 @@ class JevConfig:
     # both: a chunk must pass the word-level heuristics and then Jev.
     # only: Jev replaces the heuristics (just the free "empty output" check stays).
     mode: str = "both"
-    # An alias; pin the versioned id (jev-1.13.0) once the thresholds are tuned.
-    model: str = "jev-latest"
+    # Pinned to the version the thresholds were calibrated on (scripts/eval_jev.py).
+    # To move to a newer one: set it, rerun the eval, re-check the thresholds.
+    model: str = "jev-1.13.0"
     # Questions asked about each chunk (ids from jev.QUESTIONS; one request, answered
     # in parallel) -> the highest tolerated risk, 0..1. Above it the chunk is rejected.
     # The values are a starting point, not calibrated yet: scripts/eval_jev.py.
