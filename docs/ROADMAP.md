@@ -1,10 +1,10 @@
 # Roadmap and status
 
-Last updated: 2026-09-21 (history journal added).
+Last updated: 2026-09-21 (Jev guardrail built on a branch, see Next §1).
 
 ## Status
 
-- MVP works end to end: CLI, HTTP API, push-to-talk dictation. 17 unit tests pass (`uv run pytest -q`).
+- MVP works end to end: CLI, HTTP API, push-to-talk dictation. 23 unit tests pass (`uv run pytest -q`).
 - Verified by an agent: decoding of ogg/opus, m4a, mp3, aiff, mp4 video; VAD trimming; RU/EN recognition with glossary terms; cleanup not answering questions / not obeying instructions; guardrails on real model glitches; hotkey → record → pipeline → clipboard (simulated key press); clean shutdown.
 - **Not verified**: real Cmd+V paste into a focused app (needs Accessibility for the terminal); any live speech — all audio so far is macOS `say` TTS.
 - Code is in the private GitHub repo `nikvakhrameev/s2t` (initial commit 2026-09-21). No linter configured.
@@ -12,14 +12,14 @@ Last updated: 2026-09-21 (history journal added).
 
 ## Next (agreed with the user, not built)
 
-### 1. Semantic-divergence check with TypeSafe's **Jev** model
-- The user asked for "быструю проверку через JEV модель на то, насколько по смыслу расходятся оригинал и получившийся текст".
-- **Jev is a TypeSafe "System One" model** — use the `typesafe:typesafe-ai` skill (it appeared in the skill list late in the first session; invoke it first and read its live docs). An earlier guess that "JEV" meant an *embedding* model was wrong; nothing was built on it.
-- Open questions to settle before coding:
-  - Does Jev run locally or is it a cloud API? The project's premise is on-device processing — if transcripts would leave the machine, confirm with the user first.
-  - Latency budget: the whole cycle must stay within 2–3 s; the check runs per chunk.
-- Intended shape: an additional, **configurable** guard in `LlmCleaner._accept` (threshold in `config.yaml`, off-switch), complementing the word-level guards, which stay. It should target their blind spots: word reordering / role swaps, word-form changes, subtle paraphrase, double-negation flips now tolerated by `max_negation_loss`. Surface the score in `Result` so the threshold can be tuned from real dictations.
-- Calibrate before choosing a threshold: score known-good pairs (`scripts/eval_cleanup.py` cases) against known-bad ones ("Graf и Grafana", "Варкере"→"Redis", "не сработает"→"сработает", "banana").
+### 1. Semantic guardrail with TypeSafe's **Jev** — built (branch `worktree-jev-guardrail`), **not calibrated**
+- Built 2026-09-21: `s2t/jev.py`, `cleanup.jev.*`, `Result.jev_checks`, `scripts/eval_jev.py`; design and trade-offs in DECISIONS D11. Off by default (cloud API). Use the `typesafe:typesafe-ai` skill and its live docs when touching it.
+- Remaining, needs the user's API key (`~/.config/s2t/typesafe_api_key`):
+  - Run `scripts/eval_jev.py`: does every default question separate the good pairs from the bad ones on Russian? Reword / drop the ones that do not, set thresholds, then pin `model: jev-1.13.0`.
+  - Compare the targeted set against the one-question variants (`meaning_changed`, `fidelity`, `edit_kind`).
+  - Real latency: `timings_ms.jev` on a 1-chunk and a 5-chunk dictation (expected ~0.35 s per verdict on a warm connection; only the network part, ~235 ms, has been measured).
+  - The 422 error body and the server's idle timeout are undocumented — look at them once.
+- Later: tune thresholds from `jev_checks` in the journal; decide whether `mode: only` is viable.
 
 ### 2. Compare cleanup models
 `uv run python scripts/eval_cleanup.py -v <models>`. Baseline `Qwen3-4B-Instruct-2507-4bit`: 13/14 accepted (the one reject is the prompt-injection case — expected), mean 453 ms, max 647 ms.

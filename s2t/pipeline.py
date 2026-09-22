@@ -31,6 +31,8 @@ class Result:
     cleanup_rejected_chunks: int = 0  # units that fell back to the raw transcript
     # Every guardrail hit (cleanup.Rejection as a dict), incl. chunks rescued by a retry.
     cleanup_rejections: list[dict[str, Any]] = field(default_factory=list)
+    # Every Jev request (jev.Verdict as a dict), accepted chunks too: threshold tuning.
+    jev_checks: list[dict[str, Any]] = field(default_factory=list)
     hallucinations_dropped: int = 0
     timings_ms: dict[str, int] = field(default_factory=dict)
 
@@ -71,6 +73,10 @@ class Pipeline:
             timings[name] = round((now - clock) * 1000)
             clock = now
 
+        use_llm = cfg.cleanup.enabled if cleanup is None else (cleanup and cfg.cleanup.enabled)
+        if use_llm and self.cleaner.judge is not None:
+            self.cleaner.judge.warm()  # the TLS handshake overlaps decoding and STT
+
         if isinstance(source, np.ndarray):
             samples = np.ascontiguousarray(source, dtype=np.float32)
         elif isinstance(source, bytes):
@@ -102,14 +108,16 @@ class Pipeline:
         lap("stt")
 
         text = glossary.apply_aliases(stt.text)
-        use_llm = cfg.cleanup.enabled if cleanup is None else (cleanup and cfg.cleanup.enabled)
         if text and use_llm:
             cleaned = self.cleaner.clean(text, glossary)
             text = cleaned.text
             result.cleanup_used = cleaned.used_llm
             result.cleanup_rejected_chunks = cleaned.rejected_chunks
             result.cleanup_rejections = [asdict(r) for r in cleaned.rejections]
+            result.jev_checks = [asdict(v) for v in cleaned.jev_checks]
             lap("cleanup")
+            if cleaned.jev_checks:  # the part of "cleanup" spent waiting for Jev's verdicts
+                timings["jev"] = cleaned.jev_wait_ms
         result.text = text
         result.no_speech = not text
         timings["total"] = round((time.perf_counter() - started) * 1000)

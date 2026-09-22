@@ -29,6 +29,8 @@ class History:
         self.path = config.resolve(config.history.path)
         self._default_language = config.stt.language
         self._models = {"stt": config.stt.model, "cleanup": config.cleanup.model}
+        if config.cleanup.jev.enabled:
+            self._models["jev"] = config.cleanup.jev.model
 
     def append(
         self, result: Result, origin: str, language: str | None = None, file: str | None = None

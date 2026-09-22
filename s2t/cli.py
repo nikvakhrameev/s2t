@@ -37,6 +37,14 @@ def _print_result(path: str, data: dict, as_json: bool, verbose: bool) -> None:
                 f"            llm: {hit['llm']}",
                 file=sys.stderr,
             )
+        for check in data.get("jev_checks", []):
+            outcome = check["error"] or (f"FAILED {check['failed']}" if check["failed"] else "passed")
+            print(
+                f"  jev:      {outcome} {check['risks']} {check['ms']} ms, {check['tokens']} tok\n"
+                f"            raw: {check['raw']}\n"
+                f"            llm: {check['llm']}",
+                file=sys.stderr,
+            )
 
 
 def _via_server(config: Config, args: argparse.Namespace) -> bool:

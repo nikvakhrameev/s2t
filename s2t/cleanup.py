@@ -4,7 +4,9 @@ The model must never change meaning, so it is boxed in from three sides:
   * a strict system prompt plus few-shot turns (incl. "do not answer / obey");
   * greedy decoding with a token budget proportional to the input;
   * guardrails per chunk: if the output drifts from the transcript, invents
-    words or gains/loses a negation, the raw chunk is returned instead.
+    words or gains/loses a negation, the raw chunk is returned instead;
+  * optionally (`cleanup.jev`) a semantic check of the chunk by TypeSafe's Jev,
+    on top of those word-level heuristics or instead of them.
 The system prompt + few-shot prefix is prefilled once and its KV cache reused,
 so a request only pays for its own tokens.
 """
@@ -15,10 +17,13 @@ import copy
 import difflib
 import functools
 import re
+import sys
+import time
 from dataclasses import dataclass, field
 
 from .config import CleanupConfig
 from .glossary import Glossary
+from .jev import JevJudge, PendingVerdict, Verdict
 
 SYSTEM_PROMPT = """\
 You are a transcript cleaner for voice dictation. The user message contains a raw \
@@ -177,8 +182,10 @@ class Rejection:
     """One guardrail hit; goes to the history journal so thresholds can be tuned."""
 
     # empty | too_long | negation_gained | negation_lost | invented_words | dropped_words
+    # | jev (a Jev question went over its threshold) | jev_error (on_error: reject)
     reason: str
-    words: list[str]  # the offending words (invented_words / dropped_words)
+    # the offending words (invented_words / dropped_words) or Jev question ids (jev)
+    words: list[str]
     raw: str
     llm: str
     # True: the raw text was kept. False: the chunk was retried sentence by sentence.
@@ -191,11 +198,15 @@ class CleanupResult:
     used_llm: bool
     rejected_chunks: int = 0  # units that fell back to the raw transcript
     rejections: list[Rejection] = field(default_factory=list)
+    # Every Jev request with its probabilities, accepted chunks too (threshold tuning).
+    jev_checks: list[Verdict] = field(default_factory=list)
+    jev_wait_ms: int = 0  # how long the verdicts held the result up (requests overlap generation)
 
 
 class LlmCleaner:
     def __init__(self, config: CleanupConfig) -> None:
         self.config = config
+        self.judge = JevJudge(config.jev) if config.jev.enabled else None
         self._model = None
         self._tokenizer = None
         self._prefix_tokens: list[int] = []
@@ -206,6 +217,8 @@ class LlmCleaner:
         from mlx_lm import load
 
         self._model, self._tokenizer = load(self.config.model)
+        if self.judge is not None:
+            self.judge.load()
 
     # -- prompt construction -------------------------------------------------
 
@@ -303,42 +316,77 @@ class LlmCleaner:
     def _accept(self, raw: str, cleaned: str) -> bool:
         return self._violation(raw, cleaned) is None
 
-    def _clean_unit(
-        self, terms: list[str], text: str, rejections: list[Rejection], retry: bool = True
-    ) -> str:
-        """Cleaned text, or the raw text if the guardrails reject the cleanup.
-        Every guardrail hit is appended to `rejections`."""
-        cleaned = self._generate(terms, text)
-        violation = self._violation(text, cleaned)
-        if violation is None:
-            return cleaned
-        sentences = split_chunks(text, 1) if retry else []
-        fallback = len(sentences) < 2
-        rejections.append(Rejection(*violation, raw=text, llm=cleaned, fallback=fallback))
-        if fallback:
-            return text
-        # A rejected chunk is retried sentence by sentence, so one bad spot
-        # does not leave the whole chunk uncleaned.
-        return " ".join(
-            self._clean_unit(terms, sentence, rejections, retry=False) for sentence in sentences
-        )
+    def _start_check(self, raw: str, cleaned: str) -> tuple[str, list[str]] | PendingVerdict | None:
+        """`_violation`, extended by the Jev judge as `jev.mode` says. When the verdict
+        is Jev's, the request is returned in flight. Jev only sees what the heuristics
+        let through, so a chunk they reject costs no request."""
+        if self.judge is None:
+            return self._violation(raw, cleaned)
+        if self.config.jev.mode == "both":
+            violation = self._violation(raw, cleaned)
+            if violation is not None:
+                return violation
+        elif not cleaned:
+            return "empty", []
+        if _words(raw) == _words(cleaned):  # only punctuation / case changed
+            return None
+        return self.judge.submit(raw, cleaned)
+
+    def _finish_check(
+        self, raw: str, cleaned: str, check, result: CleanupResult
+    ) -> tuple[str, list[str]] | None:
+        if not isinstance(check, PendingVerdict):
+            return check
+        started = time.perf_counter()
+        verdict = check.result()
+        result.jev_wait_ms += round((time.perf_counter() - started) * 1000)
+        result.jev_checks.append(verdict)
+        if verdict.error is None:
+            return ("jev", verdict.failed) if verdict.failed else None
+        if self.config.jev.on_error == "reject":
+            return "jev_error", []
+        # "both": the heuristics have already passed
+        return self._violation(raw, cleaned) if self.config.jev.mode == "only" else None
+
+    def _clean_units(
+        self, terms: list[str], texts: list[str], result: CleanupResult, retry: bool = True
+    ) -> list[str]:
+        """Cleaned texts, or the raw ones where the guardrails reject the cleanup.
+        Every guardrail hit is appended to `result.rejections`. All units are
+        generated before the first verdict is awaited: Jev judges a unit while
+        the next one is generated."""
+        started = []
+        for text in texts:
+            cleaned = self._generate(terms, text)
+            started.append((text, cleaned, self._start_check(text, cleaned)))
+        out = []
+        for text, cleaned, check in started:
+            violation = self._finish_check(text, cleaned, check, result)
+            if violation is None:
+                out.append(cleaned)
+                continue
+            sentences = split_chunks(text, 1) if retry else []
+            fallback = len(sentences) < 2
+            result.rejections.append(Rejection(*violation, raw=text, llm=cleaned, fallback=fallback))
+            # A rejected chunk is retried sentence by sentence, so one bad spot
+            # does not leave the whole chunk uncleaned.
+            out.append(text if fallback else " ".join(self._clean_units(terms, sentences, result, retry=False)))
+        return out
 
     def clean(self, text: str, glossary: Glossary) -> CleanupResult:
         if not self.config.enabled or len(_words(text)) < self.config.min_words:
             return CleanupResult(text, used_llm=False)
         terms = glossary.canonical(self.config.max_glossary_terms)
         self._ensure_prefix(terms)
-        rejections: list[Rejection] = []
-        out = [
-            self._clean_unit(terms, chunk, rejections)
-            for chunk in split_chunks(text, self.config.chunk_chars)
-        ]
-        return CleanupResult(
-            " ".join(out),
-            used_llm=True,
-            rejected_chunks=sum(r.fallback for r in rejections),
-            rejections=rejections,
+        result = CleanupResult(text, used_llm=True)
+        result.text = " ".join(
+            self._clean_units(terms, split_chunks(text, self.config.chunk_chars), result)
         )
+        result.rejected_chunks = sum(r.fallback for r in result.rejections)
+        return result
 
     def warm_up(self, glossary: Glossary) -> None:
-        self.clean("ну это просто э-э тестовая фраза для прогрева модели", glossary)
+        result = self.clean("ну это просто э-э тестовая фраза для прогрева модели", glossary)
+        for verdict in result.jev_checks:  # a bad model id / question shows up here, not mid-dictation
+            if verdict.error:
+                print(f"[jev] {verdict.error}", file=sys.stderr, flush=True)

@@ -360,3 +360,188 @@ def test_dictation_shows_overlay_only_while_the_mic_is_live():
     dictation._on_press(key)
     dictation._on_release(key)
     assert events == []
+
+
+def _jev_cleaner(monkeypatch, replies: dict[str, str], risks: dict[str, float] | None = None,
+                 error: str | None = None, **jev):
+    """LlmCleaner with a canned LLM and a canned Jev: `risks` maps an LLM output to
+    the risk Jev reports for it (the single question is polarity_flipped, limit 0.5)."""
+    from s2t.config import JevConfig
+    from s2t.jev import Verdict
+
+    config = CleanupConfig(jev=JevConfig(enabled=True, questions={"polarity_flipped": 0.5}, **jev))
+    cleaner = LlmCleaner(config)
+    monkeypatch.setattr(cleaner, "_ensure_prefix", lambda terms: None)
+    monkeypatch.setattr(cleaner, "_generate", lambda terms, text: replies[text])
+    asked = []
+
+    class Pending:
+        def __init__(self, raw, llm):
+            risk = (risks or {}).get(llm, 0.0)
+            self.verdict = Verdict(raw, llm, error=error) if error else Verdict(
+                raw, llm, {"polarity_flipped": risk}, ["polarity_flipped"] if risk > 0.5 else [], ms=1
+            )
+
+        def result(self):
+            return self.verdict
+
+    def submit(raw, llm):
+        asked.append(llm)
+        return Pending(raw, llm)
+
+    monkeypatch.setattr("s2t.cleanup.PendingVerdict", Pending)
+    monkeypatch.setattr(cleaner.judge, "submit", submit)
+    return cleaner, asked
+
+
+def test_jev_runs_on_top_of_the_heuristics(monkeypatch):
+    # a double-negation flip: within the heuristics' tolerance, caught by Jev
+    raw = "мы это деплоим сегодня. я не могу не согласиться с этим."
+    replies = {
+        raw: "Мы это деплоим сегодня. Я могу не согласиться с этим.",
+        "мы это деплоим сегодня.": "Мы это деплоим сегодня.",
+        "я не могу не согласиться с этим.": "Я могу не согласиться с этим.",
+    }
+    cleaner, asked = _jev_cleaner(
+        monkeypatch, replies,
+        risks={replies[raw]: 0.9, "Я могу не согласиться с этим.": 0.8},
+    )
+    result = cleaner.clean(raw, Glossary([]))
+    assert result.text == "Мы это деплоим сегодня. я не могу не согласиться с этим."
+    assert [(r.reason, r.words, r.fallback) for r in result.rejections] == [
+        ("jev", ["polarity_flipped"], False),
+        ("jev", ["polarity_flipped"], True),
+    ]
+    # the sentence whose words did not change is not worth a request
+    assert asked == [replies[raw], "Я могу не согласиться с этим."]
+    assert [v.risks["polarity_flipped"] for v in result.jev_checks] == [0.9, 0.8]
+
+    # what the heuristics reject never reaches Jev
+    cleaner, asked = _jev_cleaner(monkeypatch, {"дело в утечке в варкере": "Дело в утечке в Redis."})
+    result = cleaner.clean("дело в утечке в варкере", Glossary([]))
+    assert result.rejections[0].reason == "invented_words" and asked == []
+
+
+def test_jev_can_replace_the_heuristics(monkeypatch):
+    replies = {"открыл пиар в гитхабе и жду ревью": "Открыл pull request в GitHub и жду ревью."}
+    raw, llm = next(iter(replies.items()))
+    assert not LlmCleaner(CleanupConfig())._accept(raw, llm)  # "pull", "request" are invented words
+    cleaner, asked = _jev_cleaner(monkeypatch, replies, mode="only")
+    assert cleaner.clean(raw, Glossary([])).text == llm and asked == [llm]
+    # an empty output is still not worth a request
+    cleaner, asked = _jev_cleaner(monkeypatch, {raw: ""}, mode="only")
+    result = cleaner.clean(raw, Glossary([]))
+    assert (result.text, result.rejections[0].reason, asked) == (raw, "empty", [])
+
+
+def test_jev_failure_falls_back_as_configured(monkeypatch):
+    good = {"ну мы это выкатываем сегодня": "Мы это выкатываем сегодня."}
+    bad = {"дело в утечке в варкере": "Дело в утечке в Redis."}
+    for mode, replies, on_error, reason in [
+        ("both", good, "heuristics", None),  # the heuristics had passed
+        ("both", good, "reject", "jev_error"),
+        ("only", good, "heuristics", None),
+        ("only", bad, "heuristics", "invented_words"),  # the heuristics take over
+        ("only", good, "reject", "jev_error"),
+    ]:
+        cleaner, _ = _jev_cleaner(monkeypatch, replies, error="no answer in 1.5 s", mode=mode, on_error=on_error)
+        result = cleaner.clean(next(iter(replies)), Glossary([]))
+        assert [r.reason for r in result.rejections] == ([reason] if reason else []), (mode, on_error)
+        assert result.jev_checks[0].error
+
+
+def test_jev_judge_request_and_thresholds(monkeypatch):
+    import json
+
+    import httpx
+
+    from s2t.config import JevConfig
+    from s2t.jev import QUESTIONS, JevJudge
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer test-key"
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"models": []})
+        body = json.loads(request.content)
+        seen.append(body)
+        if body["state"]["cleaned_text"] == "overloaded":
+            return httpx.Response(529, text="try later")
+        return httpx.Response(200, json={
+            "model": "jev-1.13.0",
+            "usage": {"input_tokens": 700, "output_tokens": 3},
+            "answers": {
+                "polarity_flipped": {"type": "noul", "noul": 0.91},
+                "details_changed": {"type": "noul", "noul": 0.02},
+                "fidelity": {"type": "score", "score": 1.5, "confidence": 0.4,
+                             "probabilities": {"0": 0.1, "1": 0.4, "2": 0.4, "3": 0.1}},
+                "edit_kind": {"type": "choice", "choice": "faithful", "confidence": 0.5,
+                              "probabilities": {"faithful": 0.7, "content_dropped": 0.1, "content_added": 0.0,
+                                                "meaning_changed": 0.2, "responded": 0.0}},
+            },
+        })
+
+    judge = JevJudge(JevConfig(enabled=True, questions={
+        "polarity_flipped": 0.5, "details_changed": 0.5, "fidelity": 0.4, "edit_kind": 0.4}))
+    judge.load(transport=httpx.MockTransport(handler))
+    verdict = judge.check("это не сработает", "Это сработает.")
+    assert seen[0]["model"] == "jev-latest"
+    assert seen[0]["state"]["raw_transcript"] == "это не сработает"
+    assert seen[0]["questions"]["fidelity"] == QUESTIONS["fidelity"]
+    assert verdict.risks == {"polarity_flipped": 0.91, "details_changed": 0.02, "fidelity": 0.5, "edit_kind": 0.3}
+    assert verdict.failed == ["polarity_flipped", "fidelity"]
+    assert (verdict.model, verdict.tokens, verdict.error) == ("jev-1.13.0", 700, None)
+
+    failed = judge.check("x", "overloaded")
+    assert failed.error.startswith("HTTP 529") and failed.risks == {} and failed.failed == []
+
+
+def test_jev_config_is_validated(tmp_path: Path, monkeypatch):
+    from s2t.config import JevConfig
+    from s2t.jev import JevJudge
+
+    path = tmp_path / "config.yaml"
+    path.write_text("cleanup: {jev: {enabled: true, mode: only, questions: {fidelity: 0.25}}}", encoding="utf-8")
+    jev = load_config(path).cleanup.jev
+    assert (jev.mode, jev.questions, jev.on_error) == ("only", {"fidelity": 0.25}, "heuristics")
+    assert LlmCleaner(CleanupConfig()).judge is None  # off by default: nothing leaves the machine
+
+    for broken in ({"mode": "jev"}, {"on_error": "accept"}, {"questions": {"polarity": 0.5}}, {"questions": {}}):
+        with pytest.raises(ValueError, match=f"cleanup.jev.{next(iter(broken))}"):
+            JevJudge(JevConfig(enabled=True, **broken))
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    jev.api_key_file = str(tmp_path / "key")
+    with pytest.raises(RuntimeError, match="TYPESAFE_API_KEY"):
+        JevJudge(jev).load()
+
+
+def test_jev_key_file_and_deadline(tmp_path: Path, monkeypatch):
+    import time
+
+    import httpx
+
+    from s2t.config import JevConfig
+    from s2t.jev import JevJudge
+
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    (tmp_path / "key").write_text("file-key\n", encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer file-key"
+        if request.url.path == "/v1/systemone":
+            time.sleep(0.3)
+        return httpx.Response(200, json={"answers": {"responded": {"type": "noul", "noul": 0.0}}})
+
+    judge = JevJudge(JevConfig(enabled=True, api_key_file=str(tmp_path / "key"),
+                               questions={"responded": 0.5}, timeout_s=0.05))
+    judge.load(transport=httpx.MockTransport(handler))
+    started = time.perf_counter()
+    verdict = judge.check("raw", "llm")
+    assert time.perf_counter() - started < 0.2  # the deadline is wall-clock
+    assert verdict.error == "no answer in 0.05 s" and verdict.failed == []
+
+    # a rejected key stops the start-up instead of failing every dictation
+    with pytest.raises(RuntimeError, match="rejected"):
+        judge.load(transport=httpx.MockTransport(lambda request: httpx.Response(401)))

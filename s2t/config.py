@@ -65,6 +65,40 @@ class SttConfig:
 
 
 @dataclass
+class JevConfig:
+    # Semantic check of every cleaned chunk against its raw text by TypeSafe's Jev
+    # (see jev.py). Jev is a cloud API: with this on, the chunk texts leave the
+    # machine.
+    enabled: bool = False
+    # The API key: $TYPESAFE_API_KEY, else the contents of this file. Keep it out
+    # of config.yaml, which is under git.
+    api_key_file: str = "~/.config/s2t/typesafe_api_key"
+    # both: a chunk must pass the word-level heuristics and then Jev.
+    # only: Jev replaces the heuristics (just the free "empty output" check stays).
+    mode: str = "both"
+    # An alias; pin the versioned id (jev-1.13.0) once the thresholds are tuned.
+    model: str = "jev-latest"
+    # Questions asked about each chunk (ids from jev.QUESTIONS; one request, answered
+    # in parallel) -> the highest tolerated risk, 0..1. Above it the chunk is rejected.
+    # The values are a starting point, not calibrated yet: scripts/eval_jev.py.
+    questions: dict[str, float] = field(
+        default_factory=lambda: {
+            "content_added": 0.5,
+            "content_dropped": 0.5,
+            "polarity_flipped": 0.5,
+            "details_changed": 0.5,
+            "roles_swapped": 0.5,
+            "responded": 0.5,
+        }
+    )
+    # Wall-clock deadline for one verdict, counted from the moment it is requested.
+    timeout_s: float = 1.5
+    # Jev unreachable / timed out / over quota:
+    # heuristics = the heuristics alone decide, reject = keep the raw chunk.
+    on_error: str = "heuristics"
+
+
+@dataclass
 class CleanupConfig:
     enabled: bool = True
     model: str = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
@@ -101,6 +135,7 @@ class CleanupConfig:
     )
     # Negations that carry meaning; see max_negation_loss.
     negations: tuple[str, ...] = ("не", "ни", "нет", "not", "no", "never")
+    jev: JevConfig = field(default_factory=JevConfig)
 
 
 @dataclass
@@ -165,9 +200,13 @@ class Config:
     history: HistoryConfig = field(default_factory=HistoryConfig)
 
     def resolve(self, path: str) -> Path:
-        """Relative paths in the config are relative to the project root."""
-        p = Path(os.path.expanduser(path))
-        return p if p.is_absolute() else PROJECT_ROOT / p
+        return resolve_path(path)
+
+
+def resolve_path(path: str) -> Path:
+    """Relative paths in the config are relative to the project root."""
+    p = Path(os.path.expanduser(path))
+    return p if p.is_absolute() else PROJECT_ROOT / p
 
 
 def _merge(obj: Any, data: dict[str, Any], where: str = "") -> Any:
